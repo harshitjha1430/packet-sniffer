@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Packet Sniffer Web Interface</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 30px; }
+        button { margin: 10px; padding: 10px 20px; cursor: pointer; }
+        #status { font-weight: bold; margin-top: 10px; }
+        #packetCount { margin-top: 10px; }
+        #packets { margin-top: 20px; overflow-y: scroll; max-height: 400px; border: 1px solid #ccc; padding: 10px; }
+        select, input { margin: 10px; padding: 10px; }
+        canvas { margin-top: 20px; }
+        .packet { margin-bottom: 10px; padding: 5px; border: 1px solid #ddd; border-radius: 5px; background-color: #f9f9f9; }
+    </style>
+</head>
+<body>
+    <h1>Packet Sniffer Web Interface</h1>
+
+    <!-- Dropdown for interface selection -->
+    <label for="interface">Select Interface:</label>
+    <select id="interface">
+        <option value="">All Interfaces</option>
+        <!-- Add dynamic interface options via JavaScript -->
+    </select>
+
+    <!-- Control buttons -->
+    <button id="startBtn" onclick="startCapture()">Start Capture</button>
+    <button id="stopBtn" onclick="stopCapture()" disabled>Stop Capture</button>
+    <button id="wiresharkBtn" onclick="openWireshark()">Open in Wireshark</button>
+
+    <div id="status">Status: Idle</div>
+    <div id="packetCount">Packets Captured: 0</div>
+
+    <!-- Filter Section -->
+    <div>
+        <label for="filterProtocol">Filter by Protocol:</label>
+        <select id="filterProtocol">
+            <option value="">All</option>
+            <option value="6">TCP</option>
+            <option value="17">UDP</option>
+        </select>
+
+        <label for="filterIP">Filter by IP (source or destination):</label>
+        <input type="text" id="filterIP" placeholder="Enter IP address">
+    </div>
+
+    <!-- Packet details section -->
+    <div id="packets"></div>
+
+    <!-- Chart for TCP/UDP packet counts -->
+    <canvas id="tcpUdpChart" width="400" height="200"></canvas>
+
+    <script>
+        let lastPacketCount = 0;
+        let capturing = false;
+        let udpPackets = 0;
+        let tcpPackets = 0;
+
+        // Fetch and populate available interfaces
+        function fetchInterfaces() {
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    const interfaceSelect = document.getElementById('interface');
+                    interfaceSelect.innerHTML = '<option value="">All Interfaces</option>';
+                    (data.interfaces || []).forEach(iface => {
+                        interfaceSelect.innerHTML += `<option value="${iface}">${iface}</option>`;
+                    });
+                });
+        }
+
+        // Start packet capture
+        function startCapture() {
+            const selectedInterface = document.getElementById('interface').value;
+            fetch('/start_capture', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ interface: selectedInterface })
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('status').innerText = `Status: Capturing (${data.interface || 'All Interfaces'})`;
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = false;
+                capturing = true;
+                updateStatus();
+                updatePackets();
+            });
+        }
+
+        // Stop packet capture
+        function stopCapture() {
+            fetch('/stop_capture', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('status').innerText = 'Status: Idle';
+                    document.getElementById('startBtn').disabled = false;
+                    document.getElementById('stopBtn').disabled = true;
+                    capturing = false;
+                });
+        }
+
+        // Open the capture file in Wireshark
+        function openWireshark() {
+            fetch('/open_wireshark')
+                .then(response => response.json())
+                .then(data => {
+                    alert(data.status);
+                });
+        }
+
+        // Update status continuously while capturing
+        function updateStatus() {
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('status').innerText = `Status: ${data.status}`;
+                    document.getElementById('packetCount').innerText = `Packets Captured: ${data.packet_count}`;
+                    updateChart(data.tcp_count, data.udp_count);
+                    if (data.status === 'Capturing') {
+                        setTimeout(updateStatus, 1000);  // Update every second
+                    }
+                });
+        }
+
+        // Update the TCP/UDP graph
+        let chart;
+        function updateChart(tcpCount, udpCount) {
+            if (chart) {
+                chart.data.datasets[0].data = [tcpCount, udpCount];
+                chart.update();
+            } else {
+                const ctx = document.getElementById('tcpUdpChart').getContext('2d');
+                chart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: ['TCP Packets', 'UDP Packets'],
+                        datasets: [{
+                            label: 'Number of Packets',
+                            data: [tcpCount, udpCount],
+                            backgroundColor: ['#ff6384', '#36a2eb']
+                        }]
+                    },
+                    options: {
+                        responsive: true
+                    }
+                });
+            }
+        }
+
+        // Update packets list and display information
+        function updatePackets() {
+            fetch('/get_packets')
+                .then(response => response.json())
+                .then(data => {
+                    const packetDiv = document.getElementById('packets');
+                    const filterProtocol = document.getElementById('filterProtocol').value;
+                    const filterIP = document.getElementById('filterIP').value.trim();
+
+                    // Only update packets if capturing is active
+                    if (capturing) {
+                        // Display only new packets since the last update
+                        data.slice(lastPacketCount).forEach(packet => {
+                            // Filter packets based on protocol and IP filter
+                            if ((filterProtocol === "" || packet.ip_proto == filterProtocol) && 
+                                (filterIP === "" || packet.ip_src.includes(filterIP) || packet.ip_dst.includes(filterIP))) {
+
+                                const packetElem = document.createElement('div');
+                                packetElem.classList.add('packet');
+                                packetElem.textContent = JSON.stringify(packet, null, 2); // Format packet data as pretty JSON
+                                packetDiv.appendChild(packetElem);
+
+                                // Update UDP and TCP packet count for the chart
+                                if (packet.ip_proto === 17) udpPackets++;
+                                if (packet.ip_proto === 6) tcpPackets++;
+                            }
+                        });
+
+                        // Update lastPacketCount to the new total number of packets
+                        lastPacketCount = data.length;
+                    }
+                });
+        }
+
+        // Initialize the interface dropdown
+        fetchInterfaces();
+
+        // Filter packets based on selected protocol and IP
+        document.getElementById('filterProtocol').addEventListener('change', updatePackets);
+        document.getElementById('filterIP').addEventListener('input', updatePackets);
+    </script>
+</body>
+</html>

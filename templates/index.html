@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Packet Sniffer Web Interface</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        /* General Styles */
+        body {
+            font-family: 'Arial', sans-serif;
+            margin: 30px;
+            background-color: #a7a7d1;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        h1 {
+            text-align: center;
+        }
+
+        button {
+            margin: 10px;
+            padding: 12px 24px;
+            cursor: pointer;
+            border: none;
+            border-radius: 4px;
+            background-color: #007BFF;
+            color: #fff;
+            font-size: 16px;
+            font-weight: bold;
+            transition: background-color 0.3s ease, transform 0.2s;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+            transform: scale(1.05);
+        }
+
+        button:active {
+            background-color: #003f7f;
+        }
+
+        #status {
+            font-weight: bold;
+            margin-top: 10px;
+            padding: 10px;
+            border: 1px solid #007BFF;
+            border-radius: 4px;
+            background-color: #e9f7ff;
+            color: #007BFF;
+            display: inline-block;
+        }
+
+        #packetCount {
+            margin-top: 10px;
+            font-size: 18px;
+            font-weight: bold;
+            color: #555;
+        }
+
+        #packets {
+            margin-top: 20px;
+            overflow-y: scroll;
+            max-height: 400px;
+            border: 2px solid #ccc;
+            padding: 10px;
+            border-radius: 6px;
+            background-color: #fff;
+            box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        select, input {
+            margin: 10px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 16px;
+            width: calc(100% - 42px);
+            max-width: 400px;
+            box-shadow: inset 0px 2px 4px rgba(0, 0, 0, 0.1);
+            transition: border-color 0.3s ease;
+        }
+
+        select:focus, input:focus {
+            border-color: #007BFF;
+            outline: none;
+            box-shadow: inset 0px 2px 6px rgba(0, 123, 255, 0.3);
+        }
+
+        canvas {
+            margin-top: 20px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            background-color: #fff;
+            box-shadow: 0px 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .packet {
+            margin-bottom: 10px;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+            box-shadow: 0px 1px 3px rgba(0, 0, 0, 0.1);
+            transition: background-color 0.3s ease;
+        }
+
+        .packet:hover {
+            background-color: #f1f1f1;
+        }
+
+        .dark-mode {
+            background-color: #121212;
+            color: #f1f1f1;
+        }
+/* Adjust the packet information text color in dark mode */
+.dark-mode .packet {
+    background-color: #1e1e1e; /* Dark background for packets in dark mode */
+    color: #cfcfcf; /* Light gray text for readability */
+}
+
+.dark-mode #packets {
+    background-color: #1e1e1e; /* Dark background for packet container */
+    color: #cfcfcf; /* Default text color for packets */
+    border-color: #333; /* Adjust border to match dark mode */
+}
+
+
+        .dark-mode button {
+            background-color: #333;
+            color: #f1f1f1;
+        }
+
+        .dark-mode #status {
+            background-color: #333;
+            color: #f1f1f1;
+        }
+    </style>
+</head>
+<body>
+    <h1>Packet Sniffer Web Interface</h1>
+
+    <!-- Dropdown for interface selection -->
+    <label for="interface">Select Interface:</label>
+    <select id="interface">
+        <option value="">All Interfaces</option>
+        <!-- Add dynamic interface options via JavaScript -->
+    </select>
+
+    <!-- Control buttons -->
+    <button id="startBtn" onclick="startCapture()">Start Capture</button>
+    <button id="stopBtn" onclick="stopCapture()" disabled>Stop Capture</button>
+    <button id="wiresharkBtn" onclick="openWireshark()">Open in Wireshark</button>
+    <button id="resetFilterBtn" onclick="resetFilters()">Reset Filters</button>
+    <button id="toggleThemeBtn" onclick="toggleTheme()">Toggle Dark Mode</button>
+
+    <div id="status">Status: Idle</div>
+    <div id="packetCount">Packets Captured: 0</div>
+
+    <!-- Filter Section -->
+    <div>
+        <label for="filterProtocol">Filter by Protocol:</label>
+        <select id="filterProtocol">
+            <option value="">All</option>
+            <option value="6">TCP</option>
+            <option value="17">UDP</option>
+        </select>
+
+        <label for="filterIP">Filter by IP (source or destination):</label>
+        <input type="text" id="filterIP" placeholder="Enter IP address">
+    </div>
+
+    <!-- Packet details section -->
+    <div id="packets"></div>
+
+    <!-- Chart for TCP/UDP packet counts -->
+    <canvas id="tcpUdpChart" width="400" height="200"></canvas>
+
+    <script>
+        let lastPacketCount = 0;
+        let capturing = false;
+
+        // Fetch and populate available interfaces
+      // Function to fetch and populate available interfaces dynamically
+function fetchInterfaces() {
+    fetch('/interfaces') // Backend endpoint to get network interfaces
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`Error fetching interfaces: ${response.statusText}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            const interfaceSelect = document.getElementById('interface');
+            interfaceSelect.innerHTML = '<option value="">All Interfaces</option>'; // Default option
+            data.interfaces.forEach(iface => {
+                const option = document.createElement('option');
+                option.value = iface;
+                option.textContent = iface;
+                interfaceSelect.appendChild(option);
+            });
+        })
+        .catch(error => {
+            console.error('Error fetching interfaces:', error);
+        });
+}
+
+// Call the function on page load
+document.addEventListener('DOMContentLoaded', fetchInterfaces);
+
+        // Start packet capture
+        function startCapture() {
+            const selectedInterface = document.getElementById('interface').value;
+            const filterProtocol = document.getElementById('filterProtocol').value;
+            fetch('/start_capture', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    interface: selectedInterface, 
+                    filter_protocol: filterProtocol 
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('status').innerText = `Status: Capturing (${data.interface || 'All Interfaces'})`;
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = false;
+                capturing = true;
+                updateStatus();
+                updatePackets();
+            });
+        }
+
+        // Stop packet capture
+        function stopCapture() {
+            fetch('/stop_capture', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('status').innerText = 'Status: Idle';
+                    document.getElementById('startBtn').disabled = false;
+                    document.getElementById('stopBtn').disabled = true;
+                    capturing = false;
+                });
+        }
+
+        // Open capture file in Wireshark
+        function openWireshark() {
+            fetch('/open_wireshark')
+                .then(response => response.json())
+                .then(data => {
+                    alert(data.status);
+                });
+        }
+
+        // Reset filters
+        function resetFilters() {
+            document.getElementById('filterProtocol').value = "";
+            document.getElementById('filterIP').value = "";
+            updatePackets();
+        }
+
+        // Toggle dark mode
+        function toggleTheme() {
+            document.body.classList.toggle('dark-mode');
+        }
+
+        // Update status and packets periodically
+        function updateStatus() {
+            if (!capturing) return;
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('status').innerText = `Status: ${data.status}`;
+                    document.getElementById('packetCount').innerText = `Packets Captured: ${data.packet_count}`;
+                    updateChart(data.tcp_count, data.udp_count);
+                    setTimeout(updateStatus, 1000);
+                });
+        }
+
+        // Update the chart
+        let chart;
+        function updateChart(tcpCount, udpCount) {
+            if (chart) {
+                chart.data.datasets[0].data = [tcpCount, udpCount];
+                chart.update();
+            } else {
+                const ctx = document.getElementById('tcpUdpChart').getContext('2d');
+                chart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: ['TCP Packets', 'UDP Packets'],
+                        datasets: [{
+                            label: 'Number of Packets',
+                            data: [tcpCount, udpCount],
+                            backgroundColor: ['#ff6384', '#36a2eb']
+                        }]
+                    },
+                    options: { responsive: true }
+                });
+            }
+        }
+
+        // Update packets list
+        function updatePackets() {
+            fetch('/get_packets')
+                .then(response => response.json())
+                .then(data => {
+                    const packetDiv = document.getElementById('packets');
+                    packetDiv.innerHTML = ""; // Clear previous packets
+                    data.forEach(packet => {
+                        const packetElem = document.createElement('div');
+                        packetElem.classList.add('packet');
+                        packetElem.textContent = `[${packet.timestamp}] ${JSON.stringify(packet, null, 2)}`;
+                        packetDiv.appendChild(packetElem);
+                    });
+                    packetDiv.scrollTop = packetDiv.scrollHeight; // Auto-scroll to latest packet
+                });
+        }
+
+        // Initialize interface
+        fetchInterfaces();
+    </script>
+</body>
+</html>
